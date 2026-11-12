@@ -31,13 +31,31 @@
   `python -m unittest discover -s tests -v` ran 78 tests successfully with one
   Windows symlink-privilege skip.
 
+- Maintainer verification on 2026-11-12: macOS arm64, Python 3.12.13, CPU,
+  fresh environment installed from `src/requirements.txt`.
+- `PYTHONDONTWRITEBYTECODE=1 python tests/scrat_runtime_regressions.py` runs
+  nine opt-in runtime checks. Before the repair, seven checks failed. After the
+  repair, all nine passed. These checks cover equal-attention HOV ties,
+  sampling-corrected single-type and multi-type R-scores, empty input rejection,
+  concurrent predictions to one output, failed training and prediction writes,
+  and preservation of existing outputs.
+- OmicOS Core 0.5.17 on macOS arm64: built a ZIP with the repository packager,
+  extracted it locally, and registered its stdio entry with the clean pinned
+  environment in an isolated Core instance. `scrat_mixup`, `scrat_train`, and
+  `scrat_predict` completed through Core's MCP call route. A 640-cell, 20-patient,
+  eight-feature synthetic input produced the NPZ, model, predictions, per-cell
+  HOV, and per-type score files. A missing input returned an error.
+- The latest repository suite passed all 78 tests. The runtime regression script
+  is invoked separately so the static CI suite does not execute package code.
+
 ## What remains unverified
 
 - Agreement with the paper's COVID benchmarks, figures, tables, or the reference
   implementation's numerical outputs. No real dataset or pretrained model was
   available in this validation.
-- Biological or clinical validity, performance on large datasets, sparse matrices,
-  GPU execution, and Linux/macOS runtime behavior.
+- Biological or clinical validity, performance on large datasets, GPU execution,
+  and Linux runtime behavior. Sparse H5AD prediction passed on a small input;
+  large sparse matrices are converted to dense and were not exercised.
 - Multi-class and continuous traits, which are outside this package's scope.
 - Redistribution review by maintainers. The package contains new implementation
   code only; the unlicensed upstream source is not vendored.

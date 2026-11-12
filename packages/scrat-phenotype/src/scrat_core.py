@@ -1,4 +1,5 @@
 import copy
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 import anndata as ad
@@ -29,8 +30,38 @@ def _output_file(value, inputs):
     return path
 
 
+@contextmanager
+def _exclusive_outputs(*paths):
+    resources = ExitStack()
+    created = []
+    handles = {}
+    try:
+        for path in sorted(paths):
+            try:
+                handle = path.open("xb")
+            except FileExistsError as error:
+                raise ValueError(f"Output already exists: {path}") from error
+            created.append(path)
+            handles[path] = resources.enter_context(handle)
+        yield handles
+        resources.close()
+    except BaseException as error:
+        try:
+            resources.close()
+        except BaseException as cleanup_error:
+            error.add_note(f"Could not close output files: {cleanup_error}")
+        for path in reversed(created):
+            try:
+                path.unlink(missing_ok=True)
+            except OSError as cleanup_error:
+                error.add_note(f"Could not remove {path}: {cleanup_error}")
+        raise
+
+
 def _read_h5ad(path, sample_key, label_key, cell_type_key, embedding_key):
     data = ad.read_h5ad(path)
+    if data.n_obs == 0:
+        raise ValueError("Input must contain at least one cell")
     required = [sample_key, cell_type_key] + ([label_key] if label_key else [])
     missing = [key for key in required if key not in data.obs]
     if missing:
@@ -316,9 +347,9 @@ def mixup_h5ad(
         mixup_mode,
         seed,
     )
-    with destination.open("xb") as handle:
+    with _exclusive_outputs(destination) as files:
         np.savez_compressed(
-            handle,
+            files[destination],
             X=np.concatenate([item["X"] for item in pseudo]),
             sample_index=np.concatenate(
                 [np.full(len(item["X"]), index, dtype=np.int64) for index, item in enumerate(pseudo)]
@@ -508,7 +539,6 @@ def train_h5ad(
         "best_validation_loss": best_loss,
         "training_history": history,
     }
-    torch.save(artifact, destination)
     prediction_frame = pd.DataFrame(
         {
             "sample_id": test_ids,
@@ -519,7 +549,9 @@ def train_h5ad(
             "positive_class": classes[1],
         }
     )
-    prediction_frame.to_csv(prediction_destination, index=False)
+    with _exclusive_outputs(destination, prediction_destination) as files:
+        torch.save(artifact, files[destination])
+        prediction_frame.to_csv(files[prediction_destination], index=False)
     return {
         "n_train_samples": len(train_ids),
         "n_validation_samples": len(validation_ids),
@@ -630,8 +662,8 @@ def predict_h5ad(
                 with torch.no_grad():
                     _, attention = model(batch, return_attention=True)
                 attention = attention[0].cpu().numpy()
-                top_indices = np.argsort(attention, axis=-1)[..., -top_k:]
-                counts = np.bincount(top_indices.reshape(-1), minlength=crop_cells)
+                threshold = np.partition(attention, -top_k, axis=-1)[..., -top_k, None]
+                counts = np.count_nonzero(attention >= threshold, axis=(0, 1))
                 hov[local_indices] += counts
                 appearances[local_indices] += 1
                 for type_name in type_names:
@@ -657,15 +689,16 @@ def predict_h5ad(
                         "predicted_label": classes[predicted],
                         "probability": probability,
                         "cell_type": type_name,
-                        "r_score": r_score_sum[type_name] / n_crops,
+                        "r_score": r_score_sum[type_name] / n_crops * len(sample_indices) / crop_cells,
                     }
                 )
-    pd.DataFrame(rows).to_csv(destination, index=False)
-    artifacts = [str(destination)]
+    frames = {destination: pd.DataFrame(rows)}
     if interpret:
-        pd.DataFrame(cell_rows).to_csv(cell_destination, index=False)
-        pd.DataFrame(type_rows).to_csv(type_destination, index=False)
-        artifacts.extend([str(cell_destination), str(type_destination)])
+        frames[cell_destination] = pd.DataFrame(cell_rows)
+        frames[type_destination] = pd.DataFrame(type_rows)
+    with _exclusive_outputs(*frames) as files:
+        for path, frame in frames.items():
+            frame.to_csv(files[path], index=False)
     return {
         "n_samples": len(rows),
         "n_crops_per_sample": n_crops,
@@ -674,5 +707,5 @@ def predict_h5ad(
         "predictions_path": str(destination),
         "cell_scores_path": str(cell_destination) if cell_destination else None,
         "cell_type_scores_path": str(type_destination) if type_destination else None,
-        "artifacts": artifacts,
+        "artifacts": [str(path) for path in frames],
     }

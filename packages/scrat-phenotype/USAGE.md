@@ -34,15 +34,22 @@ columns default to:
 The default feature input is `obsm["X_pca"]`. Set `embedding_key` to null to use
 `X` instead; `scrat_train` then fits PCA only on training cells and stores the
 transform in the model. Use normalized, comparable expression values when using
-`X`. Prediction requires the same features in the same order. The lexicographically
-second phenotype is the positive class.
+`X`. Prediction requires the same features in the same order. External embeddings
+must use the training projection; independently fitted PCA coordinates cannot be
+used with the model. For new cohorts, use `embedding_key=null` to save and reuse
+the training PCA transform. The lexicographically second phenotype is the positive class.
 
-Every output path must be new and differ from the inputs. Input files are never
-modified.
+Every output path must be new and differ from the inputs. Empty inputs are
+rejected. Input files are never modified. Outputs are exclusively created when
+results are ready to write. A competing call cannot overwrite those files.
+If creating or writing any output fails, the call removes the outputs it created.
+Treat a successful tool response as the completion signal for the artifact set.
 
 ## Install
 
-Python 3.12 is recommended. Network access is needed only to install dependencies.
+Use Python 3.12. The pinned PyTorch wheels cover macOS arm64, Windows x64, and
+Linux x64 or arm64 with glibc 2.28 or newer. Intel macOS has no matching
+`torch==2.8.0` wheel. Network access is needed only to install dependencies.
 
 ```bash
 python -m venv .venv
@@ -105,10 +112,17 @@ the mean probability. To interpret the prediction, provide both `cell_scores_pat
 and `cell_type_scores_path`.
 
 The cell CSV contains zero-based input cell row index, HOV, crop appearances, and
-appearances-normalized HOV. The cell-type CSV contains R-scores averaged over
-crops. For each crop, HOV counts how often a cell is in the top `top_k` attention
-columns across every row and head; R-score sums HOV within a cell type and divides
-by the number of cells of that type in the full input sample.
+appearances-normalized HOV. For each crop, HOV counts every attention weight at
+or above the `top_k`-th largest value in each row and head. All tied values count.
+
+The cell-type CSV reports a sampling-corrected crop estimate as `r_score`.
+Let `N` be the patient's cell count, `M` the crop size, `C` the number of crops,
+and `N_t` the patient's cell count for a type. The score is
+`(N / M) * sum(crop HOV for that type) / (C * N_t)`.
+The factor `N / M` corrects the probability that a cell appears in a crop.
+Compare scores computed with the same crop size, attention heads, and `top_k`.
+Attention is evaluated within each crop, so this estimate differs from evaluating
+the full patient attention matrix. Raw HOV and crop appearances are also retained.
 
 ## Resource use
 
